@@ -1,5 +1,5 @@
 # Huawei Charge Limit - lightweight Windows Forms front end for Huawei ROOT\WMI.
-# Reads and writes only battery start/stop charge thresholds (commands 0x1103/0x1003).
+# Reads and writes Huawei charge profiles and battery start/stop thresholds.
 # Requires Windows PowerShell 5.1 and administrator elevation for firmware writes.
 # Optional -ApplyAtLogon mode is used by a Task Scheduler task to restore the saved
 # firmware threshold once at sign-in; no resident service or polling loop is used.
@@ -29,17 +29,15 @@ function Invoke-HuaweiWmiCommand {
     $class = Get-CimClass -Namespace 'root/wmi' -ClassName 'OemWMIMethod'
     $method = $class.CimClassMethods['OemWMIfun']
     if (-not $method) {
-        throw "Huawei OemWMIfun method is unavailable in root/wmi. No firmware command was sent."
+        throw 'Huawei OemWMIfun method is unavailable in root/wmi. No firmware command was sent.'
     }
 
-    # Huawei's WMI utility first submits a 64-byte command buffer through the
-    # u8Input SAFEARRAY. Some provider versions instead expose u64Input.
     $parameters = @($method.Parameters)
     $inputParameter = $parameters | Where-Object { $_.Name -eq 'u8Input' } | Select-Object -First 1
     $outputParameter = $parameters | Where-Object { $_.Name -eq 'u8Output' } | Select-Object -First 1
     if (-not $outputParameter -or $outputParameter.CimType -ne 'UInt8Array') {
         $signature = ($parameters | ForEach-Object { "$($_.Name):$($_.CimType)" }) -join ', '
-        throw "Unsupported Huawei WMI output signature [$signature]; expected a UInt8Array u8Output. No firmware command was sent."
+        throw "Unsupported Huawei WMI output signature [$signature]; expected UInt8Array u8Output. No firmware command was sent."
     }
 
     if ($inputParameter -and $inputParameter.CimType -eq 'UInt8Array') {
@@ -59,28 +57,19 @@ function Invoke-HuaweiWmiCommand {
     $instance = Get-CimInstance -Namespace 'root/wmi' -ClassName 'OemWMIMethod' |
         Select-Object -First 1
     if (-not $instance) {
-        throw "Huawei OemWMIMethod instance is unavailable in root/wmi. No firmware command was sent."
+        throw 'Huawei OemWMIMethod instance is unavailable in root/wmi. No firmware command was sent.'
     }
 
     $result = Invoke-CimMethod -InputObject $instance -MethodName 'OemWMIfun' -Arguments $arguments
-    if ($null -eq $result) {
-        throw 'Huawei WMI method returned no result.'
-    }
+    if ($null -eq $result) { throw 'Huawei WMI method returned no result.' }
     if ($result.ReturnValue -is [bool] -and -not $result.ReturnValue) {
         throw 'Huawei WMI method returned False.'
     }
-    if ($null -eq $result.u8Output) {
-        throw 'Huawei firmware call returned no u8Output data.'
-    }
+    if ($null -eq $result.u8Output) { throw 'Huawei firmware call returned no u8Output data.' }
 
     [byte[]]$bytes = $result.u8Output
-    if ($bytes.Length -lt 3) {
-        throw "Firmware WMI response was too short ($($bytes.Length) bytes)."
-    }
-    if ($bytes[0] -ne 0) {
-        throw "Firmware status byte was $($bytes[0])."
-    }
-
+    if ($bytes.Length -lt 3) { throw "Firmware WMI response was too short ($($bytes.Length) bytes)." }
+    if ($bytes[0] -ne 0) { throw "Firmware status byte was $($bytes[0])." }
     return ,$bytes
 }
 
@@ -103,10 +92,30 @@ function Get-HuaweiChargeThreshold {
     [pscustomobject]@{ Start = $start; Stop = $stop }
 }
 
+function Get-HuaweiChargeMode {
+    # Huawei WmiUtil.dll uses 0x1603 for GetSmartChargeMode. Static analysis
+    # shows the mode in response byte 1 and capacity values in bytes 3 and 4.
+    [byte[]]$bytes = Invoke-HuaweiWmiCommand -Command ([UInt64]0x1603)
+    if ($bytes.Length -lt 5) {
+        throw "Smart Charge mode response was too short ($($bytes.Length) bytes)."
+    }
+    if ($bytes[1] -gt 6) {
+        throw "Firmware returned an unknown Smart Charge mode code: $($bytes[1])."
+    }
+    [pscustomobject]@{ Mode = [int]$bytes[1] }
+}
+
+function Set-HuaweiHomeChargingProfile {
+    # Huawei's SetSmartChargeMode command for Home (40%-70%) clears Smart
+    # Charge mode, which otherwise overrides custom thresholds. This encoding
+    # is confirmed by the vendor WmiUtil export and the open Huawei WMI project.
+    [void](Invoke-HuaweiWmiCommand -Command ([UInt64]0x462848011503))
+}
+
 function Set-HuaweiChargeThreshold {
     param(
-        [Parameter(Mandatory)][ValidateRange(0, 100)][int]$Start,
-        [Parameter(Mandatory)][ValidateRange(0, 100)][int]$Stop
+        [Parameter(Mandatory)][ValidateRange(1, 99)][int]$Start,
+        [Parameter(Mandatory)][ValidateRange(2, 100)][int]$Stop
     )
     if ($Stop -le $Start) { throw 'Stop threshold must be greater than start threshold.' }
 
@@ -149,7 +158,12 @@ if ($ApplyAtLogon) {
     try {
         if (-not (Test-Path $script:SettingsPath)) { exit 3 }
         $saved = Get-Content -Path $script:SettingsPath -Raw | ConvertFrom-Json
+        Set-HuaweiHomeChargingProfile
+        $mode = Get-HuaweiChargeMode
+        if ($mode.Mode -ne 1) { exit 6 }
         Set-HuaweiChargeThreshold -Start ([int]$saved.Start) -Stop ([int]$saved.Stop)
+        $mode = Get-HuaweiChargeMode
+        if ($mode.Mode -ne 1) { exit 6 }
         $check = Get-HuaweiChargeThreshold
         if ($check.Start -ne [int]$saved.Start -or $check.Stop -ne [int]$saved.Stop) { exit 4 }
         exit 0
@@ -189,7 +203,7 @@ $form.Controls.Add($startLabel)
 
 $startBox = [System.Windows.Forms.NumericUpDown]::new()
 $startBox.Minimum = 0
-$startBox.Maximum = 100
+$startBox.Maximum = 99
 $startBox.Value = 65
 $startBox.Location = [System.Drawing.Point]::new(285, 98)
 $startBox.Size = [System.Drawing.Size]::new(100, 25)
@@ -231,7 +245,7 @@ $form.Controls.Add($applyButton)
 $form.AcceptButton = $applyButton
 
 $defaultButton = [System.Windows.Forms.Button]::new()
-$defaultButton.Text = '100% default'
+$defaultButton.Text = 'Home 40/70'
 $defaultButton.Location = [System.Drawing.Point]::new(335, 266)
 $defaultButton.Size = [System.Drawing.Size]::new(92, 34)
 $defaultButton.Enabled = $false
@@ -270,9 +284,10 @@ $startupCheck.Add_CheckedChanged({
 $readAction = {
     try {
         $threshold = Get-HuaweiChargeThreshold
+        $mode = Get-HuaweiChargeMode
         $startBox.Value = $threshold.Start
         $stopBox.Value = $threshold.Stop
-        $status.Text = "Firmware setting: start $($threshold.Start)%, stop $($threshold.Stop)%"
+        $status.Text = "Firmware mode $($mode.Mode); start $($threshold.Start)%, stop $($threshold.Stop)%"
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 110, 45)
         $script:CanApply = $true
         $applyButton.Enabled = $true
@@ -296,29 +311,38 @@ $applyButton.Add_Click({
     if (-not $script:CanApply) { return }
     $start = [int]$startBox.Value
     $stop = [int]$stopBox.Value
-    if ($stop -le $start) {
+    if ($start -lt 1 -or $stop -le $start) {
         [void][System.Windows.Forms.MessageBox]::Show(
-            'The stop percentage must be higher than the start percentage.',
+            'Use a start value from 1–99%, and a stop value higher than the start. A zero start can reactivate Huawei Smart Charge on some models.',
             'Invalid thresholds', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
 
     $answer = [System.Windows.Forms.MessageBox]::Show(
-        "Set the firmware to start charging below $start% and stop at $stop%?",
+        "Disable Smart Charge by selecting Huawei Home mode, then set the custom limit to start below $start% and stop at $stop%?",
         'Confirm charge limit', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
     try {
         $applyButton.Enabled = $false
-        $status.Text = 'Applying and verifying firmware setting…'
+        $status.Text = 'Switching to Home mode, applying and verifying custom limit…'
         $form.Refresh()
+        Set-HuaweiHomeChargingProfile
+        $mode = Get-HuaweiChargeMode
+        if ($mode.Mode -ne 1) {
+            throw "Home mode verification failed; firmware reports mode $($mode.Mode). Custom threshold was not sent."
+        }
         Set-HuaweiChargeThreshold -Start $start -Stop $stop
+        $mode = Get-HuaweiChargeMode
+        if ($mode.Mode -ne 1) {
+            throw "Smart Charge mode changed after the threshold write; firmware reports mode $($mode.Mode)."
+        }
         $check = Get-HuaweiChargeThreshold
         if ($check.Start -ne $start -or $check.Stop -ne $stop) {
             throw "Read-back differs: firmware reports $($check.Start)% to $($check.Stop)% instead."
         }
         Save-ChargeSettings -Start $start -Stop $stop
-        $status.Text = "Applied and verified: start $start%, stop $stop%."
+        $status.Text = "Smart Charge off (Home mode); verified start $start%, stop $stop%."
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 110, 45)
     }
     catch {
@@ -332,21 +356,25 @@ $applyButton.Add_Click({
 
 $defaultButton.Add_Click({
     $answer = [System.Windows.Forms.MessageBox]::Show(
-        'Set the firmware thresholds to 0% start and 100% stop (no practical charge cap)?',
-        'Restore standard charging', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        'Restore Huawei Home mode defaults: Smart Charge off, start at 40%, stop at 70%?',
+        'Restore Home 40/70 profile', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
     try {
         $defaultButton.Enabled = $false
-        Set-HuaweiChargeThreshold -Start 0 -Stop 100
+        Set-HuaweiHomeChargingProfile
+        $mode = Get-HuaweiChargeMode
+        if ($mode.Mode -ne 1) { throw "Home mode verification failed; firmware reports mode $($mode.Mode)." }
         $check = Get-HuaweiChargeThreshold
-        if ($check.Start -ne 0 -or $check.Stop -ne 100) {
-            throw "Read-back differs: firmware reports $($check.Start)% to $($check.Stop)% instead."
+        $mode = Get-HuaweiChargeMode
+        if ($mode.Mode -ne 1) { throw "Home mode changed; firmware reports mode $($mode.Mode)." }
+        if ($check.Start -ne 40 -or $check.Stop -ne 70) {
+            throw "Home profile read-back differs: firmware reports $($check.Start)% to $($check.Stop)% instead."
         }
-        Save-ChargeSettings -Start 0 -Stop 100
-        $startBox.Value = 0
-        $stopBox.Value = 100
-        $status.Text = 'Standard 0–100% charging applied and verified.'
+        Save-ChargeSettings -Start 40 -Stop 70
+        $startBox.Value = 40
+        $stopBox.Value = 70
+        $status.Text = 'Smart Charge off; Home 40/70 profile verified.'
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 110, 45)
     }
     catch {
