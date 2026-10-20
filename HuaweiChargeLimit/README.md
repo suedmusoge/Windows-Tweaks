@@ -1,12 +1,12 @@
 # Huawei Charge Limit (experimental)
 
-A small Windows PowerShell 5.1 / WinForms utility for reading and setting Huawei laptop battery start/stop charging thresholds through the firmware WMI interface. It does not bundle Huawei binaries or run a resident background service.
+An experimental Windows PowerShell 5.1 / WinForms prototype intended to control Huawei laptop battery thresholds. It does not bundle Huawei binaries or run a resident background service.
 
 ## Before using it
 
 This is an early prototype and is **not currently compatible with the reported MateBook D15 WMI schema**. The app's battery protocol requires an `OemWMIfun` method with a 64-bit `u64Input` parameter. The target laptop reports `u8Input (UInt8)` and scalar outputs instead. The app now checks this signature before sending any command and fails closed; do not use the prior prototype build on this laptop.
 
-The required Huawei firmware interface is still being identified. `GetSmartChargeMode` from Huawei's DLL is a separate query and does not prove that the raw threshold commands are supported by the exposed WMI method. The script requests administrator elevation because supported firmware writes require it.
+The required Huawei firmware interface is still being identified. `GetSmartChargeMode` from Huawei's DLL is a separate query and does not prove that the raw threshold commands are supported by the exposed WMI method. The script requests administrator elevation, but elevation cannot compensate for the incompatible WMI method signature.
 
 No threshold read or write is supported by the current app on this laptop. Once we identify the compatible Huawei method, the first hardware test should be read-only; only a confirmed protocol should enable the setting controls.
 
@@ -19,10 +19,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\HuaweiChargeLimit.ps1
 ```
 
 The script prompts for UAC elevation if needed. It uses only built-in Windows PowerShell, WinForms, and CIM commands.
-
-## Optional sign-in restore
-
-The checkbox creates a Task Scheduler job that reapplies the last verified threshold once at user sign-in and exits. It is optional and has no polling loop. This may help if the firmware forgets its threshold across some sleep or power transitions, but it cannot reapply the setting while Windows is shut down. Keep the script at the same path after enabling the task.
 
 ## Scope
 
