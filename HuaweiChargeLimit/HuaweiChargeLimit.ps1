@@ -26,6 +26,20 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 function Invoke-HuaweiWmiCommand {
     param([Parameter(Mandatory)][UInt64]$Command)
 
+    # Fail closed unless this provider exposes the 64-bit command parameter used
+    # by the battery threshold protocol. The D15 schema reported during testing
+    # exposes u8Input instead, which cannot carry commands 0x1003/0x1103.
+    $class = Get-CimClass -Namespace 'root/wmi' -ClassName 'OemWMIMethod'
+    $method = $class.CimClassMethods['OemWMIfun']
+    if (-not $method) {
+        throw "Huawei OemWMIfun method is unavailable in root/wmi. No firmware command was sent."
+    }
+    $parameterNames = @($method.Parameters.Values | ForEach-Object { $_.Name })
+    if ($parameterNames -notcontains 'u64Input') {
+        $signature = ($parameterNames -join ', ')
+        throw "Unsupported Huawei WMI signature: OemWMIfun exposes [$signature], but battery threshold commands require u64Input. No firmware command was sent."
+    }
+
     $lastError = $null
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         try {
