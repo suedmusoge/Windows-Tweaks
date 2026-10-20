@@ -8,7 +8,7 @@ This is an early prototype and is **not currently compatible with the reported M
 
 The required Huawei firmware interface is still being identified. `GetSmartChargeMode` from Huawei's DLL is a separate query and does not prove that the raw threshold commands are supported by the exposed WMI method. The script requests administrator elevation because supported firmware writes require it.
 
-After the read succeeds and the values make sense for the machine, enter the desired start and stop percentages. The app requires `stop > start`, asks for confirmation, writes the firmware setting, then reads it back and compares both values. Observe Windows' charging status afterwards to confirm the charger actually stops at the selected level.
+No threshold read or write is supported by the current app on this laptop. Once we identify the compatible Huawei method, the first hardware test should be read-only; only a confirmed protocol should enable the setting controls.
 
 ## Run
 
@@ -26,9 +26,9 @@ The checkbox creates a Task Scheduler job that reapplies the last verified thres
 
 ## Scope
 
-- Read thresholds with WMI command `0x1103`.
-- Set thresholds with WMI command `0x1003`.
+- Intended protocol under investigation: read command `0x1103`, set command `0x1003`.
+- These commands are not sent unless the required 64-bit WMI parameter is present.
 - Does not modify fan speed, performance mode, Windows power plans, services, or unrelated registry settings.
 - Does not include any PC Manager installer, DLL, driver, firmware image, or other Huawei binary.
 
-The protocol mapping is based on the in-tree Linux Huawei WMI driver and static analysis of Huawei PC Manager. Treat the app as experimental until its read, write, read-back, and real charging behavior are verified on the intended laptop.
+The command mapping is based on the in-tree Linux Huawei WMI driver and static analysis of Huawei PC Manager, but the Windows method path for this laptop has not been verified. No charge-limit functionality should be considered working until a compatible read, a controlled write, read-back, and real charging behavior are verified on this model.
