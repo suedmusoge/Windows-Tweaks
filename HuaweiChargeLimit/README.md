@@ -4,9 +4,9 @@ A small Windows PowerShell 5.1 / WinForms utility for reading and setting Huawei
 
 ## Before using it
 
-This is an early prototype and has not yet been tested on the target laptop. It requires the firmware to expose `ROOT\WMI` class `OemWMIMethod` and method `OemWMIfun`; support can vary by model and firmware. The script requests administrator elevation because the firmware write requires it.
+This is an early prototype and is **not currently compatible with the reported MateBook D15 WMI schema**. The app's battery protocol requires an `OemWMIfun` method with a 64-bit `u64Input` parameter. The target laptop reports `u8Input (UInt8)` and scalar outputs instead. The app now checks this signature before sending any command and fails closed; do not use the prior prototype build on this laptop.
 
-The first launch only reads the current threshold and displays it. For the first hardware test, **do not click Apply yet**. Report the displayed start/stop pair or the exact error so we can compare the direct threshold read with Huawei PC Manager's `GetSmartChargeMode` output. Those are separate reads and should not be assumed to represent the same setting.
+The required Huawei firmware interface is still being identified. `GetSmartChargeMode` from Huawei's DLL is a separate query and does not prove that the raw threshold commands are supported by the exposed WMI method. The script requests administrator elevation because supported firmware writes require it.
 
 After the read succeeds and the values make sense for the machine, enter the desired start and stop percentages. The app requires `stop > start`, asks for confirmation, writes the firmware setting, then reads it back and compares both values. Observe Windows' charging status afterwards to confirm the charger actually stops at the selected level.
 
