@@ -26,51 +26,62 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 function Invoke-HuaweiWmiCommand {
     param([Parameter(Mandatory)][UInt64]$Command)
 
-    # Fail closed unless this provider exposes the 64-bit command parameter used
-    # by the battery threshold protocol. The D15 schema reported during testing
-    # exposes u8Input instead, which cannot carry commands 0x1003/0x1103.
     $class = Get-CimClass -Namespace 'root/wmi' -ClassName 'OemWMIMethod'
     $method = $class.CimClassMethods['OemWMIfun']
     if (-not $method) {
         throw "Huawei OemWMIfun method is unavailable in root/wmi. No firmware command was sent."
     }
-    $parameterNames = @($method.Parameters.Values | ForEach-Object { $_.Name })
-    if ($parameterNames -notcontains 'u64Input') {
-        $signature = ($parameterNames -join ', ')
-        throw "Unsupported Huawei WMI signature: OemWMIfun exposes [$signature], but battery threshold commands require u64Input. No firmware command was sent."
+
+    # Huawei's WMI utility first submits a 64-byte command buffer through the
+    # u8Input SAFEARRAY. Some provider versions instead expose u64Input.
+    $parameters = @($method.Parameters)
+    $inputParameter = $parameters | Where-Object { $_.Name -eq 'u8Input' } | Select-Object -First 1
+    $outputParameter = $parameters | Where-Object { $_.Name -eq 'u8Output' } | Select-Object -First 1
+    if (-not $outputParameter -or $outputParameter.CimType -ne 'UInt8Array') {
+        $signature = ($parameters | ForEach-Object { "$($_.Name):$($_.CimType)" }) -join ', '
+        throw "Unsupported Huawei WMI output signature [$signature]; expected a UInt8Array u8Output. No firmware command was sent."
     }
 
-    $lastError = $null
-    for ($attempt = 1; $attempt -le 2; $attempt++) {
-        try {
-            $instance = Get-CimInstance -Namespace 'root/wmi' -ClassName 'OemWMIMethod' |
-                Select-Object -First 1
-            if (-not $instance) {
-                throw "Huawei OemWMIMethod instance is unavailable in root/wmi."
-            }
-
-            $result = Invoke-CimMethod -InputObject $instance -MethodName 'OemWMIfun' `
-                -Arguments @{ u64Input = $Command }
-            if ($null -eq $result.u8Output) {
-                throw "Firmware WMI call returned no u8Output data."
-            }
-
-            [byte[]]$bytes = $result.u8Output
-            if ($bytes.Length -lt 3) {
-                throw "Firmware WMI response was too short ($($bytes.Length) bytes)."
-            }
-
-            # Huawei's response byte 0 is the firmware status: 0 means success.
-            if ($bytes[0] -eq 0) {
-                return ,$bytes
-            }
-            $lastError = "Firmware status byte was $($bytes[0]) (attempt $attempt of 2)."
+    if ($inputParameter -and $inputParameter.CimType -eq 'UInt8Array') {
+        [byte[]]$payload = New-Object -TypeName 'System.Byte[]' -ArgumentList 64
+        [byte[]]$commandBytes = [BitConverter]::GetBytes($Command)
+        [Array]::Copy($commandBytes, 0, $payload, 0, 8)
+        $arguments = @{ u8Input = $payload }
+    } else {
+        $wideParameter = $parameters | Where-Object { $_.Name -eq 'u64Input' } | Select-Object -First 1
+        if (-not $wideParameter) {
+            $signature = ($parameters | ForEach-Object { "$($_.Name):$($_.CimType)" }) -join ', '
+            throw "Unsupported Huawei WMI input signature [$signature]; expected UInt8Array u8Input or u64Input. No firmware command was sent."
         }
-        catch {
-            $lastError = $_.Exception.Message
-        }
+        $arguments = @{ u64Input = $Command }
     }
-    throw "Huawei firmware command failed: $lastError"
+
+    $instance = Get-CimInstance -Namespace 'root/wmi' -ClassName 'OemWMIMethod' |
+        Select-Object -First 1
+    if (-not $instance) {
+        throw "Huawei OemWMIMethod instance is unavailable in root/wmi. No firmware command was sent."
+    }
+
+    $result = Invoke-CimMethod -InputObject $instance -MethodName 'OemWMIfun' -Arguments $arguments
+    if ($null -eq $result) {
+        throw 'Huawei WMI method returned no result.'
+    }
+    if ($result.ReturnValue -is [bool] -and -not $result.ReturnValue) {
+        throw 'Huawei WMI method returned False.'
+    }
+    if ($null -eq $result.u8Output) {
+        throw 'Huawei firmware call returned no u8Output data.'
+    }
+
+    [byte[]]$bytes = $result.u8Output
+    if ($bytes.Length -lt 3) {
+        throw "Firmware WMI response was too short ($($bytes.Length) bytes)."
+    }
+    if ($bytes[0] -ne 0) {
+        throw "Firmware status byte was $($bytes[0])."
+    }
+
+    return ,$bytes
 }
 
 function Get-HuaweiChargeThreshold {
